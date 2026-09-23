@@ -5,100 +5,77 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
 import android.content.Context
 import android.os.Bundle
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.TextView
 import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import java.io.IOException
 import java.io.OutputStream
 import java.util.UUID
 
-class MainActivity : AppCompatActivity() {
+// iOS Color Palette
+val IosBackground = Color(0xFFF2F2F7)
+val IosCardBackground = Color(0xFFFFFFFF)
+val IosGreen = Color(0xFF34C759)
+val IosBlue = Color(0xFF007AFF)
+val IosOrange = Color(0xFFFF9500)
+val IosRed = Color(0xFFFF3B30)
+val IosTextColor = Color(0xFF1C1C1E)
+val IosSubText = Color(0xFF8E8E93)
 
-    private var bluetoothSocket: BluetoothSocket? = null
+class MainActivity : ComponentActivity() {
     private var outputStream: OutputStream? = null
+    private var bluetoothSocket: BluetoothSocket? = null
     private val uuid: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
 
-    @SuppressLint("MissingPermission")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        setContent {
+            SmartACApp(
+                onConnect = { connectToAC(it) },
+                sendCommand = { cmd -> sendCommand(cmd) }
+            )
+        }
+    }
 
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(40, 100, 40, 40)
+    @SuppressLint("MissingPermission")
+    private fun connectToAC(context: Context): Boolean {
+        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        val adapter = bluetoothManager.adapter
+        if (adapter == null || !adapter.isEnabled) {
+            Toast.makeText(context, "Turn on Bluetooth first", Toast.LENGTH_SHORT).show()
+            return false
         }
 
-        val statusText = TextView(this).apply {
-            text = "Status: Disconnected"
-            textSize = 20f
-            textAlignment = TextView.TEXT_ALIGNMENT_CENTER
-        }
-        layout.addView(statusText)
-
-        val btnConnect = Button(this).apply { text = "Connect to AC" }
-        layout.addView(btnConnect)
-
-        val btnOpen = Button(this).apply { text = "OPEN MOUTH" }
-        layout.addView(btnOpen)
-
-        val btnClose = Button(this).apply { text = "CLOSE MOUTH" }
-        layout.addView(btnClose)
-
-        val btnFanOn = Button(this).apply { text = "FAN ON" }
-        layout.addView(btnFanOn)
-
-        val btnFanOff = Button(this).apply { text = "FAN OFF" }
-        layout.addView(btnFanOff)
-
-        val btnAutoOn = Button(this).apply { text = "AUTO ON" }
-        layout.addView(btnAutoOn)
-
-        val btnAutoOff = Button(this).apply { text = "AUTO OFF" }
-        layout.addView(btnAutoOff)
-
-        val btnSwingOn = Button(this).apply { text = "SWING ON" }
-        layout.addView(btnSwingOn)
-
-        val btnSwingOff = Button(this).apply { text = "SWING OFF" }
-        layout.addView(btnSwingOff)
-
-        setContentView(layout)
-
-        btnConnect.setOnClickListener {
-            val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-            val adapter = bluetoothManager.adapter
-            if (adapter == null || !adapter.isEnabled) {
-                Toast.makeText(this, "Turn on Bluetooth first", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-
-            val device = adapter.bondedDevices.find { it.name == "Smart-AC-BT" }
-            if (device == null) {
-                Toast.makeText(this, "Pair with 'Smart-AC-BT' in settings first!", Toast.LENGTH_LONG).show()
-                return@setOnClickListener
-            }
-
-            try {
-                bluetoothSocket = device.createRfcommSocketToServiceRecord(uuid)
-                bluetoothSocket?.connect()
-                outputStream = bluetoothSocket?.outputStream
-                statusText.text = "Status: Connected!"
-                Toast.makeText(this, "Connected!", Toast.LENGTH_SHORT).show()
-            } catch (e: IOException) {
-                Toast.makeText(this, "Connection Failed", Toast.LENGTH_SHORT).show()
-                try { bluetoothSocket?.close() } catch (c: IOException) {}
-            }
+        val device = adapter.bondedDevices.find { it.name == "Smart-AC-BT" }
+        if (device == null) {
+            Toast.makeText(context, "Pair with 'Smart-AC-BT' in settings first!", Toast.LENGTH_LONG).show()
+            return false
         }
 
-        btnOpen.setOnClickListener { sendCommand("open\n") }
-        btnClose.setOnClickListener { sendCommand("close\n") }
-        btnFanOn.setOnClickListener { sendCommand("fanon\n") }
-        btnFanOff.setOnClickListener { sendCommand("fanoff\n") }
-        btnAutoOn.setOnClickListener { sendCommand("autoon\n") }
-        btnAutoOff.setOnClickListener { sendCommand("autooff\n") }
-        btnSwingOn.setOnClickListener { sendCommand("swingon\n") }
-        btnSwingOff.setOnClickListener { sendCommand("swingoff\n") }
+        return try {
+            bluetoothSocket = device.createRfcommSocketToServiceRecord(uuid)
+            bluetoothSocket?.connect()
+            outputStream = bluetoothSocket?.outputStream
+            Toast.makeText(context, "Connected!", Toast.LENGTH_SHORT).show()
+            true
+        } catch (e: IOException) {
+            Toast.makeText(context, "Connection Failed", Toast.LENGTH_SHORT).show()
+            try { bluetoothSocket?.close() } catch (c: IOException) {}
+            false
+        }
     }
 
     private fun sendCommand(command: String) {
@@ -106,10 +83,124 @@ class MainActivity : AppCompatActivity() {
             try {
                 outputStream?.write(command.toByteArray())
             } catch (e: IOException) {
-                Toast.makeText(this, "Error sending command", Toast.LENGTH_SHORT).show()
+                // Silent fail
             }
-        } else {
-            Toast.makeText(this, "Connect to AC first!", Toast.LENGTH_SHORT).show()
         }
     }
+}
+
+@Composable
+fun SmartACApp(onConnect: (Context) -> Boolean, sendCommand: (String) -> Unit) {
+    val context = LocalContext.current
+    var isConnected by remember { mutableStateOf(false) }
+
+    Scaffold(
+        containerColor = IosBackground,
+        modifier = Modifier.fillMaxSize()
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .padding(20.dp)
+                .fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "HBRT Smart AC",
+                fontSize = 28.sp,
+                fontWeight = FontWeight.Bold,
+                color = IosTextColor,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 20.dp, bottom = 5.dp)
+            )
+            Text(
+                text = "Herat Boys Robotic Team",
+                fontSize = 15.sp,
+                color = IosSubText,
+                modifier = Modifier.padding(bottom = 30.dp)
+            )
+
+            // Connect Button
+            Button(
+                onClick = { isConnected = onConnect(context) },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isConnected) IosGreen else IosBlue
+                ),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(55.dp)
+            ) {
+                Text(if (isConnected) "Connected" else "Connect to AC", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+            }
+
+            Spacer(modifier = Modifier.height(30.dp))
+
+            // Fan Control Card
+            IosCard(title = "Fan Power", subtitle = "Turn the AC fan on/off") {
+                IosToggle(onCmd = "fanon\n", offCmd = "fanoff\n", sendCommand = { sendCommand(it) }, color = IosGreen)
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // Auto Mode Card
+            IosCard(title = "Auto Mode", subtitle = "Adjusts based on temp") {
+                IosToggle(onCmd = "autoon\n", offCmd = "autooff\n", sendCommand = { sendCommand(it) }, color = IosOrange)
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // Mouth Control Card
+            IosCard(title = "Mouth Vent", subtitle = "Open or close the vent") {
+                IosToggle(onCmd = "open\n", offCmd = "close\n", sendCommand = { sendCommand(it) }, color = IosBlue)
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // Swing Control Card
+            IosCard(title = "Swing Mode", subtitle = "Oscillate the vent") {
+                IosToggle(onCmd = "swingon\n", offCmd = "swingoff\n", sendCommand = { sendCommand(it) }, color = IosBlue)
+            }
+        }
+    }
+}
+
+@Composable
+fun IosCard(title: String, subtitle: String, content: @Composable () -> Unit) {
+    Surface(
+        color = IosCardBackground,
+        shape = RoundedCornerShape(15.dp),
+        shadowElevation = 4.dp,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(20.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, fontSize = 17.sp, fontWeight = FontWeight.Medium, color = IosTextColor)
+                Text(subtitle, fontSize = 13.sp, color = IosSubText)
+            }
+            content()
+        }
+    }
+}
+
+@Composable
+fun IosToggle(onCmd: String, offCmd: String, sendCommand: (String) -> Unit, color: Color) {
+    var checked by remember { mutableStateOf(false) }
+    
+    Switch(
+        checked = checked,
+        onCheckedChange = {
+            checked = it
+            sendCommand(if (it) onCmd else offCmd)
+        },
+        colors = SwitchDefaults.colors(
+            checkedTrackColor = color,
+            checkedThumbColor = Color.White,
+            uncheckedTrackColor = Color(0xFFE9E9EA),
+            uncheckedThumbColor = Color.White
+        )
+    )
 }
