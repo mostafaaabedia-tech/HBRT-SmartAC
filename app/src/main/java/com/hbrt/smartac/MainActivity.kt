@@ -2,7 +2,6 @@ package com.hbrt.smartac
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
@@ -38,10 +37,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
+import java.io.InputStream
 import java.io.OutputStream
 import java.util.UUID
 
-// iOS Color Palette
 val IosBackground = Color(0xFFF2F2F7)
 val IosCardBackground = Color(0xFFFFFFFF)
 val IosGreen = Color(0xFF34C759)
@@ -53,6 +52,7 @@ val IosSubText = Color(0xFF8E8E93)
 
 class MainActivity : ComponentActivity() {
     private var outputStream: OutputStream? = null
+    private var inputStream: InputStream? = null
     private var bluetoothSocket: BluetoothSocket? = null
     private val uuid: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
 
@@ -71,22 +71,18 @@ class MainActivity : ComponentActivity() {
     private fun getPairedDevices(): Set<BluetoothDevice> {
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         val adapter = bluetoothManager.adapter
-        return if (adapter != null && adapter.isEnabled) {
-            adapter.bondedDevices
-        } else {
-            emptySet()
-        }
+        return if (adapter != null && adapter.isEnabled) adapter.bondedDevices else emptySet()
     }
 
     @SuppressLint("MissingPermission")
     private fun connectToAC(device: BluetoothDevice, onResult: (Boolean) -> Unit) {
         try {
             bluetoothSocket = device.createRfcommSocketToServiceRecord(uuid)
-            // MUST run on background thread to prevent crash!
             Thread {
                 try {
                     bluetoothSocket?.connect()
                     outputStream = bluetoothSocket?.outputStream
+                    inputStream = bluetoothSocket?.inputStream
                     runOnUiThread { onResult(true) }
                 } catch (e: IOException) {
                     try { bluetoothSocket?.close() } catch (c: IOException) {}
@@ -99,12 +95,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun sendCommand(command: String) {
-        if (outputStream != null) {
+        outputStream?.let {
             try {
-                outputStream?.write(command.toByteArray())
-            } catch (e: IOException) {
-                // Silent fail
-            }
+                it.write(command.toByteArray())
+            } catch (e: IOException) {}
         }
     }
 }
@@ -120,6 +114,17 @@ fun SmartACApp(
     var showDeviceList by remember { mutableStateOf(false) }
     var isConnecting by remember { mutableStateOf(false) }
 
+    // Live Stats from ESP32
+    var liveTemp by remember { mutableStateOf("--") }
+    var liveHum by remember { mutableStateOf("--") }
+    var espFanOn by remember { mutableStateOf(false) }
+    var espSwingOn by remember { mutableStateOf(false) }
+    var espAutoOn by remember { mutableStateOf(false) }
+    
+    // Chart History
+    val tempHistory = remember { mutableStateListOf(22f, 22f, 22f, 22f, 22f) }
+    val humHistory = remember { mutableStateListOf(50f, 50f, 50f, 50f, 50f) }
+
     val permissionsToRequest = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN)
     } else {
@@ -129,10 +134,48 @@ fun SmartACApp(
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { isGranted ->
-        if (isGranted.values.all { it }) {
-            showDeviceList = true
-        } else {
-            Toast.makeText(context, "Bluetooth permissions are required!", Toast.LENGTH_SHORT).show()
+        if (isGranted.values.all { it }) showDeviceList = true
+        else Toast.makeText(context, "Bluetooth permissions are required!", Toast.LENGTH_SHORT).show()
+    }
+
+    // Listen for ESP32 Data
+    LaunchedEffect(isConnected) {
+        if (isConnected) {
+            withContext(Dispatchers.IO) {
+                val buffer = ByteArray(1024)
+                while (true) {
+                    try {
+                        val bytes = (context as MainActivity).inputStream?.read(buffer) ?: break
+                        if (bytes > 0) {
+                            val rawMessage = String(buffer, 0, bytes)
+                            val lines = rawMessage.split("\n")
+                            for (line in lines) {
+                                val parts = line.trim().split(",")
+                                if (parts.size == 5) {
+                                    val t = parts[0].toFloatOrNull()
+                                    val h = parts[1].toFloatOrNull()
+                                    if (t != null && h != null) {
+                                        tempHistory.add(t)
+                                        humHistory.add(h)
+                                        if (tempHistory.size > 12) tempHistory.removeAt(0)
+                                        if (humHistory.size > 12) humHistory.removeAt(0)
+                                        
+                                        withContext(Dispatchers.Main) {
+                                            liveTemp = parts[0]
+                                            liveHum = parts[1]
+                                            espFanOn = parts[2] == "1"
+                                            espSwingOn = parts[3] == "1"
+                                            espAutoOn = parts[4] == "1"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e: IOException) {
+                        break
+                    }
+                }
+            }
         }
     }
 
@@ -160,77 +203,44 @@ fun SmartACApp(
                     .padding(padding)
                     .padding(20.dp)
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState()), // FIX: Now you can scroll!
+                    .verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text(
-                    text = "HBRT Smart AC",
-                    fontSize = 28.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = IosTextColor,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(top = 20.dp, bottom = 5.dp)
-                )
-                Text(
-                    text = "Herat Boys Robotic Team",
-                    fontSize = 15.sp,
-                    color = IosSubText,
-                    modifier = Modifier.padding(bottom = 30.dp)
-                )
+                Text("HBRT Smart AC", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = IosTextColor, modifier = Modifier.padding(top = 20.dp, bottom = 5.dp))
+                Text("Herat Boys Robotic Team", fontSize = 15.sp, color = IosSubText, modifier = Modifier.padding(bottom = 30.dp))
 
-                // 24-Hour Stats Chart
-                StatsChartCard()
+                StatsChartCard(liveTemp, liveHum, tempHistory, humHistory)
                 Spacer(modifier = Modifier.height(20.dp))
 
-                // Connect Button
                 Button(
                     onClick = {
                         if (isConnecting) return@Button
                         val hasPermissions = permissionsToRequest.all {
                             ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
                         }
-                        if (hasPermissions) {
-                            showDeviceList = true
-                        } else {
-                            launcher.launch(permissionsToRequest)
-                        }
+                        if (hasPermissions) showDeviceList = true else launcher.launch(permissionsToRequest)
                     },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isConnected) IosGreen else IosBlue
-                    ),
+                    colors = ButtonDefaults.buttonColors(containerColor = if (isConnected) IosGreen else IosBlue),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth().height(55.dp)
                 ) {
-                    Text(
-                        text = if (isConnecting) "Connecting..." else if (isConnected) "Connected" else "Connect to AC",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Text(if (isConnecting) "Connecting..." else if (isConnected) "Connected" else "Connect to AC", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
                 }
 
                 Spacer(modifier = Modifier.height(30.dp))
 
-                // Fan Control Card
-                IosCard(title = "Fan Power", subtitle = "Turn the AC fan on/off") {
-                    IosToggle(onCmd = "fanon\n", offCmd = "fanoff\n", sendCommand = { sendCommand(it) }, color = IosGreen)
+                IosCard(title = "Fan Power", subtitle = "Live Status: ${if (espFanOn) "ON" else "OFF"}") {
+                    IosToggle(checked = espFanOn, onCmd = "fanon\n", offCmd = "fanoff\n", sendCommand = { sendCommand(it) }, color = IosGreen)
                 }
                 Spacer(modifier = Modifier.height(20.dp))
 
-                // Auto Mode Card
-                IosCard(title = "Auto Mode", subtitle = "Adjusts based on temp") {
-                    IosToggle(onCmd = "autoon\n", offCmd = "autooff\n", sendCommand = { sendCommand(it) }, color = IosOrange)
+                IosCard(title = "Auto Mode", subtitle = "Live Status: ${if (espAutoOn) "ON" else "OFF"}") {
+                    IosToggle(checked = espAutoOn, onCmd = "autoon\n", offCmd = "autooff\n", sendCommand = { sendCommand(it) }, color = IosOrange)
                 }
                 Spacer(modifier = Modifier.height(20.dp))
 
-                // Mouth Control Card
-                IosCard(title = "Mouth Vent", subtitle = "Open or close the vent") {
-                    IosToggle(onCmd = "open\n", offCmd = "close\n", sendCommand = { sendCommand(it) }, color = IosBlue)
-                }
-                Spacer(modifier = Modifier.height(20.dp))
-
-                // Swing Control Card
-                IosCard(title = "Swing Mode", subtitle = "Oscillate the vent") {
-                    IosToggle(onCmd = "swingon\n", offCmd = "swingoff\n", sendCommand = { sendCommand(it) }, color = IosBlue)
+                IosCard(title = "Swing Mode", subtitle = "Live Status: ${if (espSwingOn) "ON" else "OFF"}") {
+                    IosToggle(checked = espSwingOn, onCmd = "swingon\n", offCmd = "swingoff\n", sendCommand = { sendCommand(it) }, color = IosBlue)
                 }
             }
         }
@@ -243,10 +253,7 @@ fun DeviceListScreen(devices: Set<BluetoothDevice>, onDeviceClick: (BluetoothDev
         containerColor = IosBackground,
         topBar = {
             Surface(color = IosCardBackground, shadowElevation = 4.dp) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = onCancel) { Text("Cancel", color = IosBlue, fontSize = 18.sp) }
                     Spacer(Modifier.weight(1f))
                     Text("Select Device", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = IosTextColor)
@@ -259,16 +266,13 @@ fun DeviceListScreen(devices: Set<BluetoothDevice>, onDeviceClick: (BluetoothDev
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             if (devices.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("No paired devices found.\nPair your ESP32 in Bluetooth settings first.", textAlign = TextAlign.Center, color = IosSubText)
+                    Text("No paired devices found.\nPair your ESP32 in settings first.", textAlign = TextAlign.Center, color = IosSubText)
                 }
             } else {
                 devices.forEach { device ->
                     @SuppressLint("MissingPermission")
                     val name = device.name ?: "Unknown Device"
-                    Surface(
-                        color = IosCardBackground,
-                        modifier = Modifier.fillMaxWidth().clickable { onDeviceClick(device) }
-                    ) {
+                    Surface(color = IosCardBackground, modifier = Modifier.fillMaxWidth().clickable { onDeviceClick(device) }) {
                         Column(modifier = Modifier.padding(20.dp)) {
                             Text(name, fontSize = 18.sp, fontWeight = FontWeight.Medium, color = IosTextColor)
                             Text(device.address, fontSize = 14.sp, color = IosSubText)
@@ -282,10 +286,7 @@ fun DeviceListScreen(devices: Set<BluetoothDevice>, onDeviceClick: (BluetoothDev
 }
 
 @Composable
-fun StatsChartCard() {
-    val tempData = listOf(22f, 21f, 20f, 21f, 23f, 25f, 28f, 30f, 29f, 27f, 26f, 25f)
-    val humData = listOf(60f, 65f, 68f, 60f, 55f, 50f, 45f, 40f, 42f, 48f, 50f, 52f)
-
+fun StatsChartCard(liveTemp: String, liveHum: String, tempData: List<Float>, humData: List<Float>) {
     Surface(
         color = IosCardBackground,
         shape = RoundedCornerShape(15.dp),
@@ -294,8 +295,8 @@ fun StatsChartCard() {
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("24H Climate", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = IosTextColor)
-                Text("Temp & Humidity", fontSize = 13.sp, color = IosSubText)
+                Text("Live Climate", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = IosTextColor)
+                Text("Temp: $liveTemp°C  Hum: $liveHum%", fontSize = 13.sp, color = IosSubText, fontWeight = FontWeight.Bold)
             }
             Spacer(modifier = Modifier.height(20.dp))
             
@@ -305,24 +306,26 @@ fun StatsChartCard() {
                 val tempPath = Path()
                 val humPath = Path()
                 
-                val maxVal = 80f
-                val tempStep = width / (tempData.size - 1)
-                val humStep = width / (humData.size - 1)
+                if (tempData.isNotEmpty()) {
+                    val maxVal = 80f
+                    val tempStep = width / (tempData.size - 1)
+                    val humStep = width / (humData.size - 1)
 
-                tempData.forEachIndexed { index, value ->
-                    val x = index * tempStep
-                    val y = height - (value / maxVal) * height
-                    if (index == 0) tempPath.moveTo(x, y) else tempPath.lineTo(x, y)
+                    tempData.forEachIndexed { index, value ->
+                        val x = index * tempStep
+                        val y = height - (value / maxVal) * height
+                        if (index == 0) tempPath.moveTo(x, y) else tempPath.lineTo(x, y)
+                    }
+
+                    humData.forEachIndexed { index, value ->
+                        val x = index * humStep
+                        val y = height - (value / maxVal) * height
+                        if (index == 0) humPath.moveTo(x, y) else humPath.lineTo(x, y)
+                    }
+
+                    drawPath(tempPath, color = IosRed, style = Stroke(width = 4f))
+                    drawPath(humPath, color = IosBlue, style = Stroke(width = 4f))
                 }
-
-                humData.forEachIndexed { index, value ->
-                    val x = index * humStep
-                    val y = height - (value / maxVal) * height
-                    if (index == 0) humPath.moveTo(x, y) else humPath.lineTo(x, y)
-                }
-
-                drawPath(tempPath, color = IosRed, style = Stroke(width = 4f))
-                drawPath(humPath, color = IosBlue, style = Stroke(width = 4f))
             }
             
             Spacer(modifier = Modifier.height(10.dp))
@@ -345,10 +348,7 @@ fun IosCard(title: String, subtitle: String, content: @Composable () -> Unit) {
         shadowElevation = 4.dp,
         modifier = Modifier.fillMaxWidth()
     ) {
-        Row(
-            modifier = Modifier.padding(20.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        Row(modifier = Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, fontSize = 17.sp, fontWeight = FontWeight.Medium, color = IosTextColor)
                 Text(subtitle, fontSize = 13.sp, color = IosSubText)
@@ -359,13 +359,10 @@ fun IosCard(title: String, subtitle: String, content: @Composable () -> Unit) {
 }
 
 @Composable
-fun IosToggle(onCmd: String, offCmd: String, sendCommand: (String) -> Unit, color: Color) {
-    var checked by remember { mutableStateOf(false) }
-    
+fun IosToggle(checked: Boolean, onCmd: String, offCmd: String, sendCommand: (String) -> Unit, color: Color) {
     Switch(
         checked = checked,
         onCheckedChange = {
-            checked = it
             sendCommand(if (it) onCmd else offCmd)
         },
         colors = SwitchDefaults.colors(
