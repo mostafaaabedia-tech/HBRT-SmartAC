@@ -2,6 +2,8 @@ package com.hbrt.smartac
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.Activity
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
 import android.content.Context
@@ -14,8 +16,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -29,6 +34,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.io.OutputStream
 import java.util.UUID
@@ -52,37 +60,41 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             SmartACApp(
-                onConnect = { connectToAC(it) },
+                onConnect = { device, callback -> connectToAC(device, callback) },
+                getPairedDevices = { getPairedDevices() },
                 sendCommand = { cmd -> sendCommand(cmd) }
             )
         }
     }
 
     @SuppressLint("MissingPermission")
-    private fun connectToAC(context: Context): Boolean {
+    private fun getPairedDevices(): Set<BluetoothDevice> {
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         val adapter = bluetoothManager.adapter
-        if (adapter == null || !adapter.isEnabled) {
-            Toast.makeText(context, "Turn on Bluetooth first", Toast.LENGTH_SHORT).show()
-            return false
+        return if (adapter != null && adapter.isEnabled) {
+            adapter.bondedDevices
+        } else {
+            emptySet()
         }
+    }
 
-        val device = adapter.bondedDevices.find { it.name == "Smart-AC-BT" }
-        if (device == null) {
-            Toast.makeText(context, "Pair with 'Smart-AC-BT' in settings first!", Toast.LENGTH_LONG).show()
-            return false
-        }
-
-        return try {
+    @SuppressLint("MissingPermission")
+    private fun connectToAC(device: BluetoothDevice, onResult: (Boolean) -> Unit) {
+        try {
             bluetoothSocket = device.createRfcommSocketToServiceRecord(uuid)
-            bluetoothSocket?.connect()
-            outputStream = bluetoothSocket?.outputStream
-            Toast.makeText(context, "Connected!", Toast.LENGTH_SHORT).show()
-            true
+            // MUST run on background thread to prevent crash!
+            Thread {
+                try {
+                    bluetoothSocket?.connect()
+                    outputStream = bluetoothSocket?.outputStream
+                    runOnUiThread { onResult(true) }
+                } catch (e: IOException) {
+                    try { bluetoothSocket?.close() } catch (c: IOException) {}
+                    runOnUiThread { onResult(false) }
+                }
+            }.start()
         } catch (e: IOException) {
-            Toast.makeText(context, "Connection Failed", Toast.LENGTH_SHORT).show()
-            try { bluetoothSocket?.close() } catch (c: IOException) {}
-            false
+            onResult(false)
         }
     }
 
@@ -98,9 +110,15 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun SmartACApp(onConnect: (Context) -> Boolean, sendCommand: (String) -> Unit) {
+fun SmartACApp(
+    onConnect: (BluetoothDevice, (Boolean) -> Unit) -> Unit,
+    getPairedDevices: () -> Set<BluetoothDevice>,
+    sendCommand: (String) -> Unit
+) {
     val context = LocalContext.current
     var isConnected by remember { mutableStateOf(false) }
+    var showDeviceList by remember { mutableStateOf(false) }
+    var isConnecting by remember { mutableStateOf(false) }
 
     val permissionsToRequest = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN)
@@ -112,91 +130,152 @@ fun SmartACApp(onConnect: (Context) -> Boolean, sendCommand: (String) -> Unit) {
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { isGranted ->
         if (isGranted.values.all { it }) {
-            isConnected = onConnect(context)
+            showDeviceList = true
         } else {
             Toast.makeText(context, "Bluetooth permissions are required!", Toast.LENGTH_SHORT).show()
         }
     }
 
+    if (showDeviceList) {
+        DeviceListScreen(
+            devices = getPairedDevices(),
+            onDeviceClick = { device ->
+                showDeviceList = false
+                isConnecting = true
+                onConnect(device) { success ->
+                    isConnecting = false
+                    isConnected = success
+                    Toast.makeText(context, if (success) "Connected!" else "Connection Failed", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onCancel = { showDeviceList = false }
+        )
+    } else {
+        Scaffold(
+            containerColor = IosBackground,
+            modifier = Modifier.fillMaxSize()
+        ) { padding ->
+            Column(
+                modifier = Modifier
+                    .padding(padding)
+                    .padding(20.dp)
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()), // FIX: Now you can scroll!
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "HBRT Smart AC",
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = IosTextColor,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 20.dp, bottom = 5.dp)
+                )
+                Text(
+                    text = "Herat Boys Robotic Team",
+                    fontSize = 15.sp,
+                    color = IosSubText,
+                    modifier = Modifier.padding(bottom = 30.dp)
+                )
+
+                // 24-Hour Stats Chart
+                StatsChartCard()
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Connect Button
+                Button(
+                    onClick = {
+                        if (isConnecting) return@Button
+                        val hasPermissions = permissionsToRequest.all {
+                            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+                        }
+                        if (hasPermissions) {
+                            showDeviceList = true
+                        } else {
+                            launcher.launch(permissionsToRequest)
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isConnected) IosGreen else IosBlue
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().height(55.dp)
+                ) {
+                    Text(
+                        text = if (isConnecting) "Connecting..." else if (isConnected) "Connected" else "Connect to AC",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(30.dp))
+
+                // Fan Control Card
+                IosCard(title = "Fan Power", subtitle = "Turn the AC fan on/off") {
+                    IosToggle(onCmd = "fanon\n", offCmd = "fanoff\n", sendCommand = { sendCommand(it) }, color = IosGreen)
+                }
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Auto Mode Card
+                IosCard(title = "Auto Mode", subtitle = "Adjusts based on temp") {
+                    IosToggle(onCmd = "autoon\n", offCmd = "autooff\n", sendCommand = { sendCommand(it) }, color = IosOrange)
+                }
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Mouth Control Card
+                IosCard(title = "Mouth Vent", subtitle = "Open or close the vent") {
+                    IosToggle(onCmd = "open\n", offCmd = "close\n", sendCommand = { sendCommand(it) }, color = IosBlue)
+                }
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Swing Control Card
+                IosCard(title = "Swing Mode", subtitle = "Oscillate the vent") {
+                    IosToggle(onCmd = "swingon\n", offCmd = "swingoff\n", sendCommand = { sendCommand(it) }, color = IosBlue)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DeviceListScreen(devices: Set<BluetoothDevice>, onDeviceClick: (BluetoothDevice) -> Unit, onCancel: () -> Unit) {
     Scaffold(
         containerColor = IosBackground,
-        modifier = Modifier.fillMaxSize()
+        topBar = {
+            Surface(color = IosCardBackground, shadowElevation = 4.dp) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = onCancel) { Text("Cancel", color = IosBlue, fontSize = 18.sp) }
+                    Spacer(Modifier.weight(1f))
+                    Text("Select Device", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = IosTextColor)
+                    Spacer(Modifier.weight(1f))
+                    Spacer(Modifier.width(64.dp))
+                }
+            }
+        }
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .padding(20.dp)
-                .fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = "HBRT Smart AC",
-                fontSize = 28.sp,
-                fontWeight = FontWeight.Bold,
-                color = IosTextColor,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(top = 20.dp, bottom = 5.dp)
-            )
-            Text(
-                text = "Herat Boys Robotic Team",
-                fontSize = 15.sp,
-                color = IosSubText,
-                modifier = Modifier.padding(bottom = 30.dp)
-            )
-
-            // 24-Hour Stats Chart
-            StatsChartCard()
-            Spacer(modifier = Modifier.height(20.dp))
-
-            // Connect Button
-            Button(
-                onClick = {
-                    val hasPermissions = permissionsToRequest.all {
-                        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+            if (devices.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No paired devices found.\nPair your ESP32 in Bluetooth settings first.", textAlign = TextAlign.Center, color = IosSubText)
+                }
+            } else {
+                devices.forEach { device ->
+                    @SuppressLint("MissingPermission")
+                    val name = device.name ?: "Unknown Device"
+                    Surface(
+                        color = IosCardBackground,
+                        modifier = Modifier.fillMaxWidth().clickable { onDeviceClick(device) }
+                    ) {
+                        Column(modifier = Modifier.padding(20.dp)) {
+                            Text(name, fontSize = 18.sp, fontWeight = FontWeight.Medium, color = IosTextColor)
+                            Text(device.address, fontSize = 14.sp, color = IosSubText)
+                        }
                     }
-                    if (hasPermissions) {
-                        isConnected = onConnect(context)
-                    } else {
-                        launcher.launch(permissionsToRequest)
-                    }
-                },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isConnected) IosGreen else IosBlue
-                ),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(55.dp)
-            ) {
-                Text(if (isConnected) "Connected" else "Connect to AC", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-            }
-
-            Spacer(modifier = Modifier.height(30.dp))
-
-            // Fan Control Card
-            IosCard(title = "Fan Power", subtitle = "Turn the AC fan on/off") {
-                IosToggle(onCmd = "fanon\n", offCmd = "fanoff\n", sendCommand = { sendCommand(it) }, color = IosGreen)
-            }
-
-            Spacer(modifier = Modifier.height(20.dp))
-
-            // Auto Mode Card
-            IosCard(title = "Auto Mode", subtitle = "Adjusts based on temp") {
-                IosToggle(onCmd = "autoon\n", offCmd = "autooff\n", sendCommand = { sendCommand(it) }, color = IosOrange)
-            }
-
-            Spacer(modifier = Modifier.height(20.dp))
-
-            // Mouth Control Card
-            IosCard(title = "Mouth Vent", subtitle = "Open or close the vent") {
-                IosToggle(onCmd = "open\n", offCmd = "close\n", sendCommand = { sendCommand(it) }, color = IosBlue)
-            }
-
-            Spacer(modifier = Modifier.height(20.dp))
-
-            // Swing Control Card
-            IosCard(title = "Swing Mode", subtitle = "Oscillate the vent") {
-                IosToggle(onCmd = "swingon\n", offCmd = "swingoff\n", sendCommand = { sendCommand(it) }, color = IosBlue)
+                    Divider(color = Color(0xFFE9E9EA), thickness = 1.dp, modifier = Modifier.padding(start = 20.dp))
+                }
             }
         }
     }
