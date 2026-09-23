@@ -2,7 +2,6 @@ package com.hbrt.smartac
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
 import android.content.Context
@@ -21,8 +20,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Path
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -103,7 +102,6 @@ fun SmartACApp(onConnect: (Context) -> Boolean, sendCommand: (String) -> Unit) {
     val context = LocalContext.current
     var isConnected by remember { mutableStateOf(false) }
 
-    // Request Bluetooth Permissions
     val permissionsToRequest = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN)
     } else {
@@ -153,7 +151,6 @@ fun SmartACApp(onConnect: (Context) -> Boolean, sendCommand: (String) -> Unit) {
             // Connect Button
             Button(
                 onClick = {
-                    // Check if we have permissions first
                     val hasPermissions = permissionsToRequest.all {
                         ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
                     }
@@ -207,7 +204,6 @@ fun SmartACApp(onConnect: (Context) -> Boolean, sendCommand: (String) -> Unit) {
 
 @Composable
 fun StatsChartCard() {
-    // Mock data for the 24-hour chart
     val tempData = listOf(22f, 21f, 20f, 21f, 23f, 25f, 28f, 30f, 29f, 27f, 26f, 25f)
     val humData = listOf(60f, 65f, 68f, 60f, 55f, 50f, 45f, 40f, 42f, 48f, 50f, 52f)
 
@@ -224,7 +220,6 @@ fun StatsChartCard() {
             }
             Spacer(modifier = Modifier.height(20.dp))
             
-            // Canvas Chart
             Canvas(modifier = Modifier.fillMaxWidth().height(120.dp)) {
                 val width = size.width
                 val height = size.height
