@@ -34,7 +34,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.io.InputStream
@@ -51,8 +50,8 @@ val IosTextColor = Color(0xFF1C1C1E)
 val IosSubText = Color(0xFF8E8E93)
 
 class MainActivity : ComponentActivity() {
-    private var outputStream: OutputStream? = null
-    private var inputStream: InputStream? = null
+    var outputStream: OutputStream? = null
+    var inputStream: InputStream? = null
     private var bluetoothSocket: BluetoothSocket? = null
     private val uuid: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
 
@@ -114,14 +113,12 @@ fun SmartACApp(
     var showDeviceList by remember { mutableStateOf(false) }
     var isConnecting by remember { mutableStateOf(false) }
 
-    // Live Stats from ESP32
     var liveTemp by remember { mutableStateOf("--") }
     var liveHum by remember { mutableStateOf("--") }
     var espFanOn by remember { mutableStateOf(false) }
     var espSwingOn by remember { mutableStateOf(false) }
     var espAutoOn by remember { mutableStateOf(false) }
     
-    // Chart History
     val tempHistory = remember { mutableStateListOf(22f, 22f, 22f, 22f, 22f) }
     val humHistory = remember { mutableStateListOf(50f, 50f, 50f, 50f, 50f) }
 
@@ -138,7 +135,6 @@ fun SmartACApp(
         else Toast.makeText(context, "Bluetooth permissions are required!", Toast.LENGTH_SHORT).show()
     }
 
-    // Listen for ESP32 Data
     LaunchedEffect(isConnected) {
         if (isConnected) {
             withContext(Dispatchers.IO) {
@@ -230,17 +226,17 @@ fun SmartACApp(
                 Spacer(modifier = Modifier.height(30.dp))
 
                 IosCard(title = "Fan Power", subtitle = "Live Status: ${if (espFanOn) "ON" else "OFF"}") {
-                    IosToggle(checked = espFanOn, onCmd = "fanon\n", offCmd = "fanoff\n", sendCommand = { sendCommand(it) }, color = IosGreen)
+                    IosToggle(isChecked = espFanOn, onCmd = "fanon\n", offCmd = "fanoff\n", sendCommand = { sendCommand(it) }, color = IosGreen)
                 }
                 Spacer(modifier = Modifier.height(20.dp))
 
                 IosCard(title = "Auto Mode", subtitle = "Live Status: ${if (espAutoOn) "ON" else "OFF"}") {
-                    IosToggle(checked = espAutoOn, onCmd = "autoon\n", offCmd = "autooff\n", sendCommand = { sendCommand(it) }, color = IosOrange)
+                    IosToggle(isChecked = espAutoOn, onCmd = "autoon\n", offCmd = "autooff\n", sendCommand = { sendCommand(it) }, color = IosOrange)
                 }
                 Spacer(modifier = Modifier.height(20.dp))
 
                 IosCard(title = "Swing Mode", subtitle = "Live Status: ${if (espSwingOn) "ON" else "OFF"}") {
-                    IosToggle(checked = espSwingOn, onCmd = "swingon\n", offCmd = "swingoff\n", sendCommand = { sendCommand(it) }, color = IosBlue)
+                    IosToggle(isChecked = espSwingOn, onCmd = "swingon\n", offCmd = "swingoff\n", sendCommand = { sendCommand(it) }, color = IosBlue)
                 }
             }
         }
@@ -359,10 +355,13 @@ fun IosCard(title: String, subtitle: String, content: @Composable () -> Unit) {
 }
 
 @Composable
-fun IosToggle(checked: Boolean, onCmd: String, offCmd: String, sendCommand: (String) -> Unit, color: Color) {
+fun IosToggle(isChecked: Boolean, onCmd: String, offCmd: String, sendCommand: (String) -> Unit, color: Color) {
+    var checked by remember(isChecked) { mutableStateOf(isChecked) }
+    
     Switch(
         checked = checked,
         onCheckedChange = {
+            checked = it
             sendCommand(if (it) onCmd else offCmd)
         },
         colors = SwitchDefaults.colors(
