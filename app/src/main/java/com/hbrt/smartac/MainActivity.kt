@@ -51,7 +51,7 @@ val IosSubText = Color(0xFF8E8E93)
 
 class MainActivity : ComponentActivity() {
     var outputStream: OutputStream? = null
-    var inputStream: InputStream? = null
+    private var inputStream: InputStream? = null
     private var bluetoothSocket: BluetoothSocket? = null
     private val uuid: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
 
@@ -61,7 +61,8 @@ class MainActivity : ComponentActivity() {
             SmartACApp(
                 onConnect = { device, callback -> connectToAC(device, callback) },
                 getPairedDevices = { getPairedDevices() },
-                sendCommand = { cmd -> sendCommand(cmd) }
+                sendCommand = { cmd -> sendCommand(cmd) },
+                getInputStream = { inputStream }
             )
         }
     }
@@ -106,7 +107,8 @@ class MainActivity : ComponentActivity() {
 fun SmartACApp(
     onConnect: (BluetoothDevice, (Boolean) -> Unit) -> Unit,
     getPairedDevices: () -> Set<BluetoothDevice>,
-    sendCommand: (String) -> Unit
+    sendCommand: (String) -> Unit,
+    getInputStream: () -> InputStream?
 ) {
     val context = LocalContext.current
     var isConnected by remember { mutableStateOf(false) }
@@ -118,6 +120,7 @@ fun SmartACApp(
     var espFanOn by remember { mutableStateOf(false) }
     var espSwingOn by remember { mutableStateOf(false) }
     var espAutoOn by remember { mutableStateOf(false) }
+    var espMouthOpen by remember { mutableStateOf(false) }
     
     val tempHistory = remember { mutableStateListOf(22f, 22f, 22f, 22f, 22f) }
     val humHistory = remember { mutableStateListOf(50f, 50f, 50f, 50f, 50f) }
@@ -139,15 +142,22 @@ fun SmartACApp(
         if (isConnected) {
             withContext(Dispatchers.IO) {
                 val buffer = ByteArray(1024)
+                var lineBuffer = "" // FIX: Buffer to hold incomplete Bluetooth chunks
+                
                 while (true) {
                     try {
-                        val bytes = (context as MainActivity).inputStream?.read(buffer) ?: break
+                        val stream = getInputStream() ?: break
+                        val bytes = stream.read(buffer)
                         if (bytes > 0) {
-                            val rawMessage = String(buffer, 0, bytes)
-                            val lines = rawMessage.split("\n")
-                            for (line in lines) {
-                                val parts = line.trim().split(",")
-                                if (parts.size == 5) {
+                            lineBuffer += String(buffer, 0, bytes)
+                            
+                            // Process all complete lines in the buffer
+                            while (lineBuffer.contains("\n")) {
+                                val line = lineBuffer.substringBefore("\n").trim()
+                                lineBuffer = lineBuffer.substringAfter("\n")
+                                
+                                val parts = line.split(",")
+                                if (parts.size == 6) {
                                     val t = parts[0].toFloatOrNull()
                                     val h = parts[1].toFloatOrNull()
                                     if (t != null && h != null) {
@@ -162,6 +172,7 @@ fun SmartACApp(
                                             espFanOn = parts[2] == "1"
                                             espSwingOn = parts[3] == "1"
                                             espAutoOn = parts[4] == "1"
+                                            espMouthOpen = parts[5] == "1"
                                         }
                                     }
                                 }
@@ -225,6 +236,17 @@ fun SmartACApp(
 
                 Spacer(modifier = Modifier.height(30.dp))
 
+                Button(
+                    onClick = { sendCommand("sysoff\n") },
+                    colors = ButtonDefaults.buttonColors(containerColor = IosRed),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().height(50.dp)
+                ) {
+                    Text("System Power Off", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
                 IosCard(title = "Fan Power", subtitle = "Live Status: ${if (espFanOn) "ON" else "OFF"}") {
                     IosToggle(isChecked = espFanOn, onCmd = "fanon\n", offCmd = "fanoff\n", sendCommand = { sendCommand(it) }, color = IosGreen)
                 }
@@ -235,8 +257,25 @@ fun SmartACApp(
                 }
                 Spacer(modifier = Modifier.height(20.dp))
 
+                IosCard(title = "Mouth Vent", subtitle = "Live Status: ${if (espMouthOpen) "OPEN" else "CLOSED"}") {
+                    IosToggle(isChecked = espMouthOpen, onCmd = "open\n", offCmd = "close\n", sendCommand = { sendCommand(it) }, color = IosBlue)
+                }
+                Spacer(modifier = Modifier.height(20.dp))
+
                 IosCard(title = "Swing Mode", subtitle = "Live Status: ${if (espSwingOn) "ON" else "OFF"}") {
                     IosToggle(isChecked = espSwingOn, onCmd = "swingon\n", offCmd = "swingoff\n", sendCommand = { sendCommand(it) }, color = IosBlue)
+                }
+                Spacer(modifier = Modifier.height(20.dp))
+
+                IosCard(title = "Freeze Vent", subtitle = "Stops vent exactly where it is") {
+                    Button(
+                        onClick = { sendCommand("stopvent\n") },
+                        colors = ButtonDefaults.buttonColors(containerColor = IosSubText),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 10.dp)
+                    ) {
+                        Text("Freeze", color = Color.White, fontWeight = FontWeight.SemiBold)
+                    }
                 }
             }
         }
